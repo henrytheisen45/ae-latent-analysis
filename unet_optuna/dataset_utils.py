@@ -49,20 +49,21 @@ def get_dataloaders(dataset_name, batch_size=128, num_workers=2, data_root='./da
     if dataset_name.lower() in ['mnist', 'fashion_mnist']:
         transform = transforms.Compose([
             transforms.ToTensor(),
+            transforms.Normalize((0.5,), (0.5,)),
         ])
+
     elif dataset_name.lower() in ['cifar10', 'cifar100', 'svhn']:
         transform = transforms.Compose([
             transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
+
     elif dataset_name.lower() == 'celeba':
         transform = transforms.Compose([
             transforms.Resize(img_size),
             transforms.CenterCrop(img_size),
             transforms.ToTensor(),
-        ])
-    else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
     
     # Load dataset

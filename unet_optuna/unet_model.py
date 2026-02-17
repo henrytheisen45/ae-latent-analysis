@@ -149,7 +149,7 @@ class FlexibleUNetAutoencoder(nn.Module):
             x = F.interpolate(x, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
         
         x = self.out_conv(x)
-        return torch.sigmoid(x)
+        return torch.tanh(x)
     
     def forward(self, x, return_latent=False):
         """Forward pass through the autoencoder"""
