@@ -53,9 +53,9 @@ class FlexibleUNetAutoencoder(nn.Module):
         for i in range(num_levels):
             out_channels = base_channels * (2 ** i)
             self.encoders.append(DoubleConv(current_channels, out_channels, kernel_size, padding))
-            if i < num_levels - 1:  # Don't add pool after last encoder
-                self.pools.append(nn.MaxPool2d(pooling_size))
+            self.pools.append(nn.MaxPool2d(pooling_size))
             current_channels = out_channels
+
         
         # Bottleneck
         bottleneck_channels = base_channels * (2 ** num_levels)
@@ -88,6 +88,7 @@ class FlexibleUNetAutoencoder(nn.Module):
         for _ in range(self.num_levels):
             size = size // self.pooling_size
         return size
+        
     
     def encode(self, x):
         """Encode input to latent space"""
@@ -97,8 +98,7 @@ class FlexibleUNetAutoencoder(nn.Module):
         for i in range(self.num_levels):
             x = self.encoders[i](x)
             skip_connections.append(x)
-            if i < self.num_levels - 1:
-                x = self.pools[i](x)
+            x = self.pools[i](x)
         
         # Bottleneck (latent space)
         latent = self.bottleneck(x)
@@ -118,10 +118,9 @@ class FlexibleUNetAutoencoder(nn.Module):
             
             # Handle potential size mismatches with skip connections
             skip = skip_connections[i]
-            if x.shape != skip.shape:
-                # Interpolate skip connection to match decoder output size
-                skip = F.interpolate(skip, size=x.shape[2:], mode='bilinear', align_corners=False)
-            
+            if x.shape[2:] != skip.shape[2:]:
+                x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=False)
+
             x = torch.cat([x, skip], dim=1)
             x = self.decoders[i](x)
         
