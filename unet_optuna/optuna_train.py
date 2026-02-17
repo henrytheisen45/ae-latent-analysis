@@ -43,9 +43,9 @@ def objective(trial, dataset_name, num_epochs, device, data_root, subset_size):
         num_levels_range = (3, 5)  # 3-5 levels
         batch_size_choices = [32, 64, 128, 256]
     elif dataset_name.lower() in ['cifar100', 'celeba']:
-        base_channels_choices = [64, 128, 256]
-        num_levels_range = (3, 5)  # 3-5 levels
-        batch_size_choices = [16, 32, 64, 128]
+        base_channels_choices = [64, 64]
+        num_levels_range = (3, 3)  # 3-5 levels
+        batch_size_choices = [64, 64]
     else:
         # Default for unknown datasets
         base_channels_choices = [32, 64, 128]
@@ -55,8 +55,8 @@ def objective(trial, dataset_name, num_epochs, device, data_root, subset_size):
     # Suggest hyperparameters
     base_channels = trial.suggest_categorical('base_channels', base_channels_choices)
     num_levels = trial.suggest_int('num_levels', num_levels_range[0], num_levels_range[1])
-    kernel_size = trial.suggest_categorical('kernel_size', [3, 5, 7])
-    base_lr = trial.suggest_float('learning_rate', 1e-4, 3e-3, log=True)
+    kernel_size = trial.suggest_categorical('kernel_size', [3, 3])
+    base_lr = trial.suggest_float('learning_rate', 2.2e-4, 2.2e-4, log=True)
     batch_size = trial.suggest_categorical('batch_size', batch_size_choices)
     learning_rate = base_lr * (batch_size / base_channels_choices[0])
     
@@ -249,6 +249,11 @@ def train_best_model(dataset_name, best_params, num_epochs=100, device='cuda',
     Returns:
         model: Trained model
     """
+    if torch.cuda.is_available():
+        print("GPU:", torch.cuda.get_device_name(0))
+    
+
+
     # Get dataset info
     dataset_info = get_dataset_info(dataset_name)
     in_channels = dataset_info['channels']
@@ -259,9 +264,12 @@ def train_best_model(dataset_name, best_params, num_epochs=100, device='cuda',
     num_levels = best_params['num_levels']
     kernel_size = best_params['kernel_size']
     batch_size = best_params['batch_size']
-    learning_rate = best_params['learning_rate']
+    base_lr = best_params['learning_rate']
     pooling_size = best_params['pooling_size']
     padding = (kernel_size - 1) // 2
+
+    #TODO make flexible
+    learning_rate = base_lr * (batch_size / 64)
     
     print(f"\n{'='*60}")
     print(f"Training Best Model")
@@ -315,10 +323,17 @@ def train_best_model(dataset_name, best_params, num_epochs=100, device='cuda',
         'val_loss': best_val_loss
     }, save_path)
     print(f"Model saved to {save_path}")
+
+    torch.save(model.state_dict(), save_path.replace(".pth", "_weights.pth"))
+
     
     # Visualize reconstructions
-    visualize_reconstructions(model, val_loader, device=device, 
+    try:
+        visualize_reconstructions(model, val_loader, device=device, 
                             save_path=f'{dataset_name}_best_reconstructions.png')
+    except Exception as e:
+        print("Visualization failed:", e)
+
     
     return model
 
