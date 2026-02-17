@@ -7,6 +7,7 @@ class DoubleConv(nn.Module):
     """Two consecutive convolutional layers with BatchNorm and ReLU"""
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1):
         super().__init__()
+        
         self.double_conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=padding),
             nn.BatchNorm2d(out_channels),
@@ -15,7 +16,8 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True)
         )
-    
+        self._check_image_pooling_compatibility()
+
     def forward(self, x):
         return self.double_conv(x)
 
@@ -44,6 +46,10 @@ class FlexibleUNetAutoencoder(nn.Module):
         self.kernel_size = kernel_size
         self.padding = padding
         self.pooling_size = pooling_size
+
+        # Check img size compatibility
+        # TODO change dataloader to pad if not compatible
+        self._check_image_pooling_compatibility()
         
         # Build encoder
         self.encoders = nn.ModuleList()
@@ -82,6 +88,18 @@ class FlexibleUNetAutoencoder(nn.Module):
         # Calculate expected bottleneck size
         self.bottleneck_size = self._calculate_bottleneck_size()
     
+
+        
+    def _check_image_pooling_compatibility(self):
+        expected_divisor = self.pooling_size ** self.num_levels
+        if self.img_size % expected_divisor != 0:
+            warnings.warn(
+                f"img_size={self.img_size} is not divisible by {expected_divisor} "
+                f"(pooling_size={self.pooling_size}^{self.num_levels}). "
+                "Decoder will interpolate to align skip connections.",
+                UserWarning
+            )
+
     def _calculate_bottleneck_size(self):
         """Calculate the spatial size at the bottleneck"""
         size = self.img_size
