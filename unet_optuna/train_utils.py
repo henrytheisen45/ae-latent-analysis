@@ -50,7 +50,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device, use_amp=False
         data = data.to(device)
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=use_amp):
+        with autocast('cuda',enabled=use_amp):
             output = model(data)
             loss = criterion(output, data)
 
@@ -81,7 +81,7 @@ def validate(model, val_loader, criterion, device, use_amp=False):
     with torch.no_grad():
         for data, _ in val_loader:
             data = data.to(device)
-            with autocast(enabled=use_amp):
+            with autocast('cuda',enabled=use_amp):
                 output = model(data)
                 loss = criterion(output, data)
             bs = data.size(0)
@@ -115,7 +115,7 @@ def train_autoencoder(model, train_loader, val_loader, num_epochs=100,
     criterion = nn.MSELoss()
     early_stopping = EarlyStopping(patience=patience, verbose=verbose)
     use_amp = (str(device).startswith("cuda") and torch.cuda.is_available())
-    scaler = GradScaler(enabled=use_amp)
+    scaler = GradScaler('cuda',enabled=use_amp)
     
     best_val_loss = float('inf')
     
