@@ -41,14 +41,13 @@ class EarlyStopping:
         return self.early_stop
 
 
- def train_epoch(model, train_loader, optimizer, criterion, device, use_amp=False, scaler=None):
+def train_epoch(model, train_loader, optimizer, criterion, device, use_amp=False, scaler=None):
     model.train()
     total_loss = 0.0
     n = 0
 
     for data, _ in train_loader:
         data = data.to(device)
-
         optimizer.zero_grad(set_to_none=True)
 
         with autocast(enabled=use_amp):
@@ -56,6 +55,8 @@ class EarlyStopping:
             loss = criterion(output, data)
 
         if use_amp:
+            if scaler is None:
+                raise ValueError("use_amp=True but scaler is None")
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -68,6 +69,7 @@ class EarlyStopping:
         n += bs
 
     return total_loss / n
+
 
 
 
