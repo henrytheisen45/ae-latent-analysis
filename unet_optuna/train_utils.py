@@ -2,6 +2,8 @@ import copy
 
 import torch
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
+
 
 
 class EarlyStopping:
@@ -39,44 +41,54 @@ class EarlyStopping:
         return self.early_stop
 
 
-def train_epoch(model, train_loader, optimizer, criterion, device):
-    """Train for one epoch"""
+ def train_epoch(model, train_loader, optimizer, criterion, device, use_amp=False, scaler=None):
     model.train()
-    total_loss = 0
+    total_loss = 0.0
     n = 0
 
     for data, _ in train_loader:
         data = data.to(device)
-        
+
         optimizer.zero_grad(set_to_none=True)
-        output = model(data)
-        loss = criterion(output, data)
-        loss.backward()
-        optimizer.step()
-        
-        total_loss += loss.item() * data.size(0)
-        n += data.size(0)
-    
+
+        with autocast(enabled=use_amp):
+            output = model(data)
+            loss = criterion(output, data)
+
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        bs = data.size(0)
+        total_loss += loss.item() * bs
+        n += bs
+
     return total_loss / n
 
 
-def validate(model, val_loader, criterion, device):
-    """Validate the model"""
+
+
+def validate(model, val_loader, criterion, device, use_amp=False):
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     n = 0
-    
     with torch.no_grad():
         for data, _ in val_loader:
             data = data.to(device)
-            output = model(data)
-            total_loss += loss.item() * data.size(0)
-            n += data.size(0)
-    
+            with autocast(enabled=use_amp):
+                output = model(data)
+                loss = criterion(output, data)
+            bs = data.size(0)
+            total_loss += loss.item() * bs
+            n += bs
     return total_loss / n
 
 
-def train_autoencoder(model, train_loader, val_loader, num_epochs=50, 
+def train_autoencoder(model, train_loader, val_loader, num_epochs=100, 
                      learning_rate=1e-3, device='cuda', patience=10, 
                      verbose=True, trial=None):
     """
@@ -100,15 +112,19 @@ def train_autoencoder(model, train_loader, val_loader, num_epochs=50,
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
     early_stopping = EarlyStopping(patience=patience, verbose=verbose)
+    use_amp = (str(device).startswith("cuda") and torch.cuda.is_available())
+    scaler = GradScaler(enabled=use_amp)
     
     best_val_loss = float('inf')
     
     for epoch in range(num_epochs):
         # Train
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, use_amp=use_amp, scaler=scaler)
+
         
         # Validate
-        val_loss = validate(model, val_loader, criterion, device)
+        val_loss = validate(model, val_loader, criterion, device, use_amp=use_amp)
+
         
         if verbose:
             print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
