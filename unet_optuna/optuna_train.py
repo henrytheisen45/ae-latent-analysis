@@ -56,8 +56,9 @@ def objective(trial, dataset_name, num_epochs, device, data_root, subset_size):
     base_channels = trial.suggest_categorical('base_channels', base_channels_choices)
     num_levels = trial.suggest_int('num_levels', num_levels_range[0], num_levels_range[1])
     kernel_size = trial.suggest_categorical('kernel_size', [3, 5, 7])
-    learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
+    base_lr = trial.suggest_float('learning_rate', 1e-4, 3e-3, log=True)
     batch_size = trial.suggest_categorical('batch_size', batch_size_choices)
+    learning_rate = base_lr * (batch_size / base_channels_choices[0])
     
     # Padding is typically (kernel_size - 1) // 2 for 'same' padding
     padding = (kernel_size - 1) // 2
