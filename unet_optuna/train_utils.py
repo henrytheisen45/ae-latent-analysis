@@ -44,11 +44,11 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
     n = 0
-    
+
     for data, _ in train_loader:
         data = data.to(device)
         
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         output = model(data)
         loss = criterion(output, data)
         loss.backward()
@@ -64,15 +64,16 @@ def validate(model, val_loader, criterion, device):
     """Validate the model"""
     model.eval()
     total_loss = 0
+    n = 0
     
     with torch.no_grad():
         for data, _ in val_loader:
             data = data.to(device)
             output = model(data)
-            loss = criterion(output, data)
-            total_loss += loss.item()
+            total_loss += loss.item() * data.size(0)
+            n += data.size(0)
     
-    return total_loss / len(val_loader)
+    return total_loss / n
 
 
 def train_autoencoder(model, train_loader, val_loader, num_epochs=50, 
