@@ -2,7 +2,8 @@ import copy
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
+
 
 
 
