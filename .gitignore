@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# PyTorch / Training
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+models/
+runs/
+wandb/
+
+# Logs / Outputs
+logs/
+*.log
+slurm-*.out
+slurm-*.err
+
+# Data (never commit datasets)
+data/
+datasets/
+raw_data/
+processed_data/
+
+# Results / Experiments
+outputs/
+results/
+experiments/
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temp files
+tmp/
+temp/
+*.swp
+
+#optuna output
+optuna_results/
