@@ -2,7 +2,6 @@ import copy
 
 import torch
 import torch.nn as nn
-import numpy as np
 
 
 class EarlyStopping:
@@ -44,6 +43,7 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
     """Train for one epoch"""
     model.train()
     total_loss = 0
+    n = 0
     
     for data, _ in train_loader:
         data = data.to(device)
@@ -54,9 +54,10 @@ def train_epoch(model, train_loader, optimizer, criterion, device):
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item()
+        total_loss += loss.item() * data.size(0)
+        n += data.size(0)
     
-    return total_loss / len(train_loader)
+    return total_loss / n
 
 
 def validate(model, val_loader, criterion, device):
