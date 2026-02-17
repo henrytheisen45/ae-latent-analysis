@@ -95,7 +95,9 @@ def get_dataloaders(dataset_name, batch_size=128, num_workers=2, data_root='./da
     
     # Create subset if requested (for faster experimentation)
     if subset_size is not None and subset_size < len(full_dataset):
-        indices = np.random.choice(len(full_dataset), subset_size, replace=False)
+        #TODO make seed an arg
+        rng = np.random.default_rng(42)
+        indices = rng.choice(len(full_dataset), subset_size, replace=False)
         full_dataset = Subset(full_dataset, indices)
     
     # Split into train and validation
