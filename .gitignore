@@ -19,8 +19,15 @@ models/
 runs/
 wandb/
 
+# model files
+*.pth
+*.pt
+*.ckpt
+
 # Logs / Outputs
 logs/
+artifacts/
+wandb/
 *.log
 slurm-*.out
 slurm-*.err
@@ -47,5 +54,10 @@ tmp/
 temp/
 *.swp
 
-#optuna output
+# model files
+*.pth
+*.pt
+*.ckpt
+
+#optuna output (legacy)
 optuna_results/
