@@ -1,58 +1,63 @@
+# ========================
 # Python
+# ========================
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-.env
-.venv/
-venv/
+*.so
 *.egg-info/
 
-# Jupyter
-.ipynb_checkpoints/
+# ========================
+# Environments
+# ========================
+.env
+.venv
+env/
+venv/
+.conda/
 
-# PyTorch / Training
-*.pt
-*.pth
-*.ckpt
-checkpoints/
-runs/
-wandb/
-
-# Logs / Outputs
-logs/
-artifacts/
-wandb/
-*.log
-slurm-*.out
-slurm-*.err
-
-# Data (never commit datasets)
-data/
-datasets/
-raw_data/
-processed_data/
-
-# Results / Experiments
-outputs/
-results/
-experiments/
-
-# OS / Editor junk
-.DS_Store
-Thumbs.db
+# ========================
+# IDE
+# ========================
 .vscode/
 .idea/
 
-# Temp files
-tmp/
-temp/
-*.swp
+# ========================
+# Raw Data
+# ========================
+data/
 
-# model files
+# ========================
+# Artifacts / Outputs
+# ========================
+artifacts/
+runs/
+logs/
+checkpoints/
+*.log
+
+
+# Model weights
 *.pth
 *.pt
 *.ckpt
 
-#optuna output (legacy)
+# ========================
+# Optuna
+# ========================
+*.db
+*.sqlite
+*.sqlite3
 optuna_results/
+
+# ========================
+# Jupyter
+# ========================
+.ipynb_checkpoints/
+
+# ========================
+# OS
+# ========================
+.DS_Store
+Thumbs.db
