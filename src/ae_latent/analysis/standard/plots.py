@@ -1,7 +1,5 @@
 
 
-
-
 def visualize_reconstructions(
     model,
     data_loader,
@@ -9,6 +7,7 @@ def visualize_reconstructions(
     num_images=10,
     save_path=None,
     denormalize=None,
+    seed=42
 ):
     """
     Visualize original and reconstructed images (originals + recon in a 2-row grid).
@@ -64,8 +63,11 @@ def visualize_reconstructions(
 
         # Guard against too-large num_images
         n = min(num_images, data.shape[0])
+        
+        g = torch.Generator().manual_seed(seed)
+        idx = torch.randperm(len(data), generator=g)[:num_images]
 
-        data = data[:n].to(device)
+        data = data[idx].to(device)
         recon = model(data)
 
         # Move to CPU and denormalize for display
@@ -78,7 +80,7 @@ def visualize_reconstructions(
     # If n == 1, axes may not be 2D; normalize it
     if n == 1:
         axes = axes.reshape(2, 1)
-
+        
     for i in range(n):
         if is_grayscale:
             axes[0, i].imshow(data_disp[i].squeeze(0), cmap="gray")
