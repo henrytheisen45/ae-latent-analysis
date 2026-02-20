@@ -104,8 +104,8 @@ class DatasetInfo:
 def get_dataset_info(dataset_name: str) -> DatasetInfo:
     name = dataset_name.lower()
     configs = {
-        "mnist":         dict(channels=1, img_size=28, num_classes=10,  target_kind="class", target_dim=None),
-        "fashion_mnist": dict(channels=1, img_size=28, num_classes=10,  target_kind="class", target_dim=None),
+        "mnist":         dict(channels=1, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
+        "fashion_mnist": dict(channels=1, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
         "cifar10":       dict(channels=3, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
         "cifar100":      dict(channels=3, img_size=32, num_classes=100, target_kind="class", target_dim=None),
         "svhn":          dict(channels=3, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
