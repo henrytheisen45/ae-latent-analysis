@@ -47,14 +47,12 @@ def visualize_reconstructions(
 
     # Default denormalize for Normalize(mean=0.5, std=0.5) per channel
     if denormalize is None:
-        mean = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-        std = torch.tensor([0.5, 0.5, 0.5]).view(1, 3, 1, 1)
-
         def denormalize(x: torch.Tensor) -> torch.Tensor:
             # x: [B,C,H,W]
-            m = mean.to(x.device, x.dtype)
-            s = std.to(x.device, x.dtype)
-            return (x * s + m).clamp(0, 1)
+            C = x.shape[1]
+            mean = torch.full((1, C, 1, 1), 0.5, device=x.device, dtype=x.dtype)
+            std  = torch.full((1, C, 1, 1), 0.5, device=x.device, dtype=x.dtype)
+            return (x * std + mean).clamp(0, 1)
 
     model.eval()
     with torch.no_grad():
@@ -65,7 +63,7 @@ def visualize_reconstructions(
         n = min(num_images, data.shape[0])
         
         g = torch.Generator().manual_seed(seed)
-        idx = torch.randperm(len(data), generator=g)[:num_images]
+        idx = torch.randperm(len(data), generator=g)[:n]
 
         data = data[idx].to(device)
         recon = model(data)
@@ -102,5 +100,57 @@ def visualize_reconstructions(
 
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
+    print("hii")
     return fig, axes, {"original": data_disp, "reconstruction": recon_disp}
+
+
+
+def visualize_raw_images(
+    dataset,
+    num_images=10,
+    seed=42,
+    save_path=None,
+):
+    """
+    Visualize raw (pre-transform) images directly from the dataset.
+
+    Args:
+        dataset: torchvision dataset (e.g. CelebA, CIFAR, MNIST)
+        num_images: number of images to show
+        seed: RNG seed
+        save_path: optional path to save figure
+    """
+    import torch
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    rng = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(len(dataset), generator=rng)[:num_images]
+
+    fig, axes = plt.subplots(1, num_images, figsize=(1.5 * num_images, 3))
+
+    if num_images == 1:
+        axes = [axes]
+
+    for i, j in enumerate(idx):
+        sample = dataset[j]
+
+        # torchvision datasets usually return (PIL, label) before transform
+        if isinstance(sample, (tuple, list)):
+            img = sample[0]
+        else:
+            img = sample
+
+        # Convert PIL → numpy if needed
+        if hasattr(img, "convert"):
+            img = np.array(img)
+
+        axes[i].imshow(img)
+        axes[i].axis("off")
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+
+    return fig, axes

@@ -1,6 +1,0 @@
-name: ae_ls
-channels:
-  - defaults
-dependencies:
-  - python=3.11
-  
