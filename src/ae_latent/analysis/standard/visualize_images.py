@@ -100,7 +100,6 @@ def visualize_reconstructions(
 
     if save_path is not None:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    print("hii")
     return fig, axes, {"original": data_disp, "reconstruction": recon_disp}
 
 
