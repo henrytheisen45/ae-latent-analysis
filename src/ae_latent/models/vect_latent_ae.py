@@ -395,19 +395,21 @@ class VectorLatentAE(_BaseLatentAE):
         return z
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        if not isinstance(z, torch.Tensor):
+        if not torch.is_tensor(z):
             raise TypeError(f"decode expects z as torch.Tensor, got {type(z)}")
         if z.ndim != 2:
             raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
         if z.shape[1] != self.z_dim:
             raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
-
+    
+        # Make device mismatch less annoying
+        z = z.to(next(self.parameters()).device)
+    
         B = z.shape[0]
         c_bottom, Hb, Wb = self.core.bottom_shape
-        h = self.from_z(z).view(B, c_bottom, Hb, Wb)
+        h = self.from_z(z).reshape(B, c_bottom, Hb, Wb)
         x_logits = self.core.decode_from_bottom(h)
         return self._apply_out_activation(x_logits)
-
 
 # ----------------------------
 # Variant 2: GAP bottleneck (ablation)
