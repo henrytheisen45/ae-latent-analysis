@@ -401,10 +401,9 @@ class VectorLatentAE(_BaseLatentAE):
             raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
         if z.shape[1] != self.z_dim:
             raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
-    
-        # Make device mismatch less annoying
+
         z = z.to(next(self.parameters()).device)
-    
+
         B = z.shape[0]
         c_bottom, Hb, Wb = self.core.bottom_shape
         h = self.from_z(z).reshape(B, c_bottom, Hb, Wb)
@@ -479,6 +478,8 @@ class GlobalAvgPoolLatentAE(_BaseLatentAE):
             raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
         if z.shape[1] != self.z_dim:
             raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
+
+        z = z.to(next(self.parameters()).device)
 
         B = z.shape[0]
         c_bottom, Hb, Wb = self.core.bottom_shape
