@@ -117,6 +117,7 @@ def load_full_config(path: str | Path) -> Dict[str, Dict[str, Any]]:
     }
 
     return {
+        "root": cfg,
         "model": model_cfg,
         "data": data_cfg,
         "train": train_cfg,
