@@ -18,6 +18,7 @@ This project studies how autoencoders organize high-dimensional image data in la
 ---
 
 ## Project Structure
+
 ae-latent-analysis/
 │
 ├── src/
@@ -32,7 +33,7 @@ ae-latent-analysis/
 │
 ├── configs/ # Experiment configuration files
 ├── notebooks/ # Exploratory analysis (kept separate from core logic)
-├── experiments/ # Research notes + documented experiment results
+└── experiments/ # Research notes + documented experiment results
 
 ---
 
