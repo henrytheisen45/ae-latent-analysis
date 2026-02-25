@@ -1,36 +1,49 @@
 # AE Latent Analysis
 
-Code for analyzing the structure of autoencoder latent spaces. Specifically,
-intrinsic dimension estimates, embeddings, and class overlap analysis.
+A reproducible research pipeline for studying the geometry of latent spaces in convolutional autoencoders.
 
-This repository builds on research advisor's code and is extended
-for independent research experiments.
+This project investigates how latent dimension, architecture, and training choices affect the intrinsic geometry of learned representations — with a focus on intrinsic dimension (ID), neighborhood structure, and manifold smoothness.
 
 ---
 
-## Overview
+## Research Goal
 
-This project studies how autoencoders organize high-dimensional image
-data in latent space. The goal is to understand:
+This project studies how autoencoders organize high-dimensional image data in latent space. The goal is to understand:
 
 - Intrinsic dimensionality of learned representations
 - Examine neighborhood and class structure
 - Stability of embeddings across models and datasets
-- Generally test intuitions regarding geometry of AE latent representions
-
-Experiments are primarily conducted on CelebA using models trained on
-UWEC HPC systems.
+- Test intuitions regarding geometry of latent representions on simple models, before looking at more complex ones
 
 ---
 
-## Baseline Code
-
-The initial commit contains baseline code from research advisor 
-
-All subsequent commits reflect independent modifications and experiments.
+## Project Structure
+ae-latent-analysis/
+│
+├── src/
+│ └── ae_latent/
+│ ├── models/ # Autoencoder architectures + builders
+│ ├── training/ # Training loops and optimization logic
+│ ├── analysis/ # Latent extraction + intrinsic dimension analysis
+│ ├── data/ # Deterministic dataloaders + dataset utilities
+│ ├── cli/ # Command-line entrypoints
+│ ├── tuning/ # Hyperparameter search utilities
+│ └── utils/ # Config loading + reproducibility helpers
+│
+├── configs/ # Experiment configuration files
+├── notebooks/ # Exploratory analysis (kept separate from core logic)
+├── experiments/ # Research notes + documented experiment results
 
 ---
 
-## Acknowledgements
+##  Model Philosophy
 
-Baseline implementation provided by Julian Antolin.
+The default model is a vector-bottleneck convolutional autoencoder:
+
+- No skip connections
+- Latent is a true vector `z ∈ ℝ^d`
+- Controlled downsampling (`num_levels`)
+- Minimal architectural adjustments
+
+We intentionally isolate the bottleneck as the only information path to avoid contaminating latent geometry with bypass connections.
+This is a "start simple" model. More to come later.
