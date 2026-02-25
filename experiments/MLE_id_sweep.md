@@ -46,9 +46,7 @@ Held constant across all models:
 
 ### Experimental Variable
 
-The only parameter varied is:
-
-z_dim ∈ {8, 16, 32, 64, 128, 256}
+The only parameter varied is: z_dim ∈ {8, 16, 32, 64, 128, 256}
 
 
 This isolates the effect of latent capacity on representation geometry.
@@ -82,10 +80,7 @@ The global ID estimate is the mean of `m_i` across valid query points.
 
 ## k-Sweep for Stability
 
-Because the estimator depends on `k`, we evaluate:
-
-k ∈ {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 80}
-
+Because the estimator depends on `k`, we evaluate:k ∈ {5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 80}
 
 - Small k → high variance
 - Large k → curvature and density bias
