@@ -1,6 +1,4 @@
 """
-vect_latent_ae.py
-
 Vector-bottleneck convolutional autoencoder for latent-geometry experiments.
 
 This module provides two *encoder-reduction* variants that share the exact same
