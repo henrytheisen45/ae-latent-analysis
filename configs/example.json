@@ -1,0 +1,43 @@
+{
+    "data": {
+      "batch_size": 128,
+      "data_root": "PATH/TO/DATA",
+      "download": true,
+      "drop_last": false,
+      "num_workers": 4,
+      "persistent_workers": true,
+      "pin_memory": true,
+      "return_ids": false,
+      "shuffle_test": false,
+      "shuffle_train": true,
+      "shuffle_val": false,
+      "subset_seed": null,
+      "subset_size": null,
+      "val_split": 0.1
+    },
+    "dataset": "celeba",
+    "device": "cuda",
+    "loss": "l1",
+    "model": {
+      "base_channels": 32,
+      "gn_groups": 8,
+      "model_variant": "vector",
+      "num_levels": 4,
+      "out_activation": "tanh"
+    },
+    "run_name": "celeba_z512_20260225-141208",
+    "seed": 42,
+    "train": {
+      "early_stop_min_delta": 0.0,
+      "early_stop_patience": 10,
+      "epochs": 100,
+      "grad_clip": 1.0,
+      "log_every": 50,
+      "lr": 0.0002,
+      "save_dir": "runs",
+      "use_amp": true,
+      "weight_decay": 0.0001
+    },
+    "use_amp": true,
+    "z_dim": 512
+  }
