@@ -41,15 +41,16 @@ Held constant across all models:
 - Loss function
 - Optimizer and learning rate schedule
 - Batch size
-- Number of training epochs
-- Random seed (unless otherwise noted)
+- Early stopping patience
+- Random seed
 
 ### Experimental Variable
 
-The only parameter varied is: z_dim ∈ {8, 16, 32, 64, 128, 256}
+The only parameter varied is: z_dim ∈ {8, 16, 32, 64, 128, 256, 512}
 
 
 This isolates the effect of latent capacity on representation geometry.
+The projection from the final encoder layer necissarilly varies accoring to Z dim. 
 
 ---
 
@@ -85,7 +86,8 @@ Because the estimator depends on `k`, we evaluate:k ∈ {5, 10, 15, 20, 25, 30, 
 - Small k → high variance
 - Large k → curvature and density bias
 
-Scalar ID values are derived from the plateau region (typically k ≈ 15–40).
+Scalar ID values are derived from the plateau region (typically k ≈ 15–40). 
+Other Ks are included to confirm the behavior above. 
 
 ---
 
