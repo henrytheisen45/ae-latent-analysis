@@ -1,50 +1,58 @@
 """
-Vector-bottleneck convolutional autoencoder for latent-geometry experiments.
+Convolutional autoencoder with a vector bottleneck.
 
-This module provides two *encoder-reduction* variants that share the exact same
-convolutional encoder/decoder body to prevent copy/paste drift:
+This file defines a single baseline architecture used for latent geometry
+experiments. The goal is to vary z_dim while keeping the convolutional
+encoder/decoder body fixed, so changes in intrinsic dimension estimates
+can be attributed to the bottleneck rather than architectural drift.
 
-Variants
---------
-1) VectorLatentAE (baseline)
-   - Encoder reduction: FLATTEN the bottom feature map h_bottom
-     (B, Cb, Hb, Wb) -> (B, Cb*Hb*Wb) before projecting to z.
-
-2) GlobalAvgPoolLatentAE (ablation)
-   - Encoder reduction: GLOBAL AVERAGE POOL (GAP) the bottom feature map h_bottom
-     (B, Cb, Hb, Wb) -> (B, Cb) before projecting to z.
-
-What differs (and what does NOT)
--------------------------------
-- Shared (identical across variants):
-  * Convolutional encoder that maps x -> h_bottom
-  * Convolutional decoder that maps h_bottom -> x_logits (pre-activation)
-  * Decoder structure/capacity is identical
-  * Decoder head 'from_z' is identical (z_dim -> flat_dim) across variants
-
-- Different (by design):
-  * The encoder reduction (flatten vs GAP)
-  * The input dimension (and thus parameter count) of the encoder projection head 'to_z' differs
-    substantially (flat_dim -> z_dim vs c_bottom -> z_dim). This is an unavoidable consequence of
-    these reductions if you keep the body identical. Interpret comparisons accordingly.
-
-Shape contract
---------------
-- img_shape=(H, W) must be divisible by 2**num_levels in both dimensions.
-  If not, pad/crop in the dataloader (recommended) rather than hacking the model.
-
-Input / output scaling
-----------------------
-- If inputs are normalized to [-1, 1] (e.g., Normalize(mean=0.5,std=0.5)), use out_activation="tanh".
-- If inputs are scaled to [0, 1], use out_activation="sigmoid".
-- If you want raw logits (e.g., custom loss), use out_activation="none".
-
-Design goals
+Architecture
 ------------
-- Deterministic shapes and explicit contracts
-- Shared core to avoid drift between variants
-- Strong validation checks with clear error messages
-- Stable defaults for small batches (GroupNorm + SiLU)
+Encoder:
+    x ∈ R^{BxCxHxW}
+        → h_bottom ∈ R^{BxCbxHbxWb}
+
+Reduction:
+    flatten(h_bottom) ∈ R^{Bx(Cb·Hb·Wb)}
+
+Bottleneck:
+    z = Linear(flat_dim → z_dim)
+
+Decoder:
+    Linear(z_dim → flat_dim)
+        → reshape to (B, Cb, Hb, Wb)
+        → convolutional decoder
+        → x_logits ∈ R^{BxCxHxW}
+        → optional output activation
+
+Across z_dim sweeps
+-------------------
+When {in_channels, img_shape, base_channels, num_levels, gn_max_groups}
+are fixed, the convolutional body is identical across runs. Only the
+linear bottleneck maps (to_z, from_z) change. This isolates the effect
+of bottleneck dimension.
+
+Shape constraint
+----------------
+img_shape = (H, W) must be divisible by 2**num_levels in both dimensions.
+Padding/cropping should be handled in the dataloader.
+
+Normalization
+-------------
+GroupNorm + SiLU is used throughout. Batch statistics are avoided to
+maintain stability at small batch sizes.
+
+gn_max_groups
+-------------
+Maximum (preferred) number of GroupNorm groups. The actual number of
+groups for a layer is the largest divisor of out_channels not exceeding
+gn_max_groups (fallback to 1 if necessary).
+
+Output activation
+-----------------
+tanh     : for inputs normalized to [-1, 1]
+sigmoid  : for inputs in [0, 1]
+none     : return raw logits
 """
 
 from __future__ import annotations
@@ -59,25 +67,8 @@ OutAct = Literal["tanh", "sigmoid", "none"]
 
 
 # ----------------------------
-# Helpers
+# Validation and small helpers
 # ----------------------------
-
-def _pick_gn_groups(num_channels: int, preferred: int = 8) -> int:
-    """
-    GroupNorm requires num_groups to divide num_channels.
-    Pick the largest g <= preferred that divides num_channels.
-    Fallback to 1 (LayerNorm-like behavior across channels).
-    """
-    if not isinstance(num_channels, int) or num_channels <= 0:
-        raise ValueError(f"num_channels must be a positive int, got {num_channels!r}")
-    if not isinstance(preferred, int) or preferred <= 0:
-        raise ValueError(f"preferred must be a positive int, got {preferred!r}")
-
-    g = min(preferred, num_channels)
-    while g > 1 and (num_channels % g) != 0:
-        g -= 1
-    return g
-
 
 def _validate_positive_int(name: str, value: int) -> None:
     if not isinstance(value, int) or value <= 0:
@@ -89,61 +80,42 @@ def _validate_nonneg_int(name: str, value: int) -> None:
         raise ValueError(f"{name} must be an int >= 0, got {value!r}")
 
 
-class ConvBlock(nn.Module):
-    """Conv -> GN -> SiLU -> Conv -> GN -> SiLU"""
-    def __init__(self, in_ch: int, out_ch: int, gn_preferred: int = 8):
-        super().__init__()
-        _validate_positive_int("in_ch", in_ch)
-        _validate_positive_int("out_ch", out_ch)
-        g = _pick_gn_groups(out_ch, gn_preferred)
-
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(g, out_ch),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(g, out_ch),
-            nn.SiLU(inplace=True),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+def _validate_img_shape(img_shape: Tuple[int, int]) -> Tuple[int, int]:
+    if not (isinstance(img_shape, tuple) and len(img_shape) == 2):
+        raise TypeError(f"img_shape must be a tuple (H, W), got {img_shape!r}")
+    H, W = img_shape
+    if not (isinstance(H, int) and isinstance(W, int)):
+        raise TypeError(f"img_shape must contain ints, got {img_shape!r}")
+    if H <= 0 or W <= 0:
+        raise ValueError(f"img_shape must be positive, got {img_shape!r}")
+    return H, W
 
 
-class Downsample(nn.Module):
-    """Downsample by 2 via stride-2 conv (kernel=4,stride=2,pad=1)."""
-    def __init__(self, in_ch: int, out_ch: int, gn_preferred: int = 8):
-        super().__init__()
-        _validate_positive_int("in_ch", in_ch)
-        _validate_positive_int("out_ch", out_ch)
-        g = _pick_gn_groups(out_ch, gn_preferred)
-
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.GroupNorm(g, out_ch),
-            nn.SiLU(inplace=True),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+def _validate_out_activation(out_activation: OutAct) -> None:
+    if out_activation not in ("tanh", "sigmoid", "none"):
+        raise ValueError(f"out_activation must be one of ['tanh','sigmoid','none'], got {out_activation!r}")
 
 
-class Upsample(nn.Module):
-    """Upsample by 2 via transposed conv (kernel=4,stride=2,pad=1)."""
-    def __init__(self, in_ch: int, out_ch: int, gn_preferred: int = 8):
-        super().__init__()
-        _validate_positive_int("in_ch", in_ch)
-        _validate_positive_int("out_ch", out_ch)
-        g = _pick_gn_groups(out_ch, gn_preferred)
+def _pick_gn_groups(num_channels: int, gn_max_groups: int) -> int:
+    """
+    Pick the GroupNorm group count.
 
-        self.net = nn.Sequential(
-            nn.ConvTranspose2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.GroupNorm(g, out_ch),
-            nn.SiLU(inplace=True),
-        )
+    Parameters
+    ----------
+    num_channels:
+      Number of channels to be normalized (must be > 0).
+    gn_max_groups:
+      Maximum/preferred number of GN groups. The returned group count will be
+      the largest divisor of num_channels that is <= gn_max_groups.
+      Falls back to 1 (LayerNorm-ish behavior across channels) if needed.
+    """
+    _validate_positive_int("num_channels", num_channels)
+    _validate_positive_int("gn_max_groups", gn_max_groups)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+    g = min(gn_max_groups, num_channels)
+    while g > 1 and (num_channels % g) != 0:
+        g -= 1
+    return g
 
 
 @dataclass(frozen=True)
@@ -155,17 +127,6 @@ class _ShapeSpec:
     Wb: int
     c_bottom: int
     flat_dim: int
-
-
-def _validate_img_shape(img_shape: Tuple[int, int]) -> Tuple[int, int]:
-    if not (isinstance(img_shape, tuple) and len(img_shape) == 2):
-        raise TypeError(f"img_shape must be a tuple (H, W), got {img_shape!r}")
-    H, W = img_shape
-    if not (isinstance(H, int) and isinstance(W, int)):
-        raise TypeError(f"img_shape must contain ints, got {img_shape!r}")
-    if H <= 0 or W <= 0:
-        raise ValueError(f"img_shape must be positive, got {img_shape!r}")
-    return H, W
 
 
 def _validate_and_compute_shapes(img_shape: Tuple[int, int], base_channels: int, num_levels: int) -> _ShapeSpec:
@@ -187,34 +148,92 @@ def _validate_and_compute_shapes(img_shape: Tuple[int, int], base_channels: int,
     return _ShapeSpec(H=H, W=W, div=div, Hb=Hb, Wb=Wb, c_bottom=c_bottom, flat_dim=flat_dim)
 
 
-def _validate_out_activation(out_activation: OutAct) -> None:
-    if out_activation not in ("tanh", "sigmoid", "none"):
-        raise ValueError(f"out_activation must be one of ['tanh','sigmoid','none'], got {out_activation!r}")
+# ----------------------------
+# Building blocks
+# ----------------------------
+
+class ConvBlock(nn.Module):
+    """Conv -> GN -> SiLU -> Conv -> GN -> SiLU"""
+    def __init__(self, in_ch: int, out_ch: int, *, gn_max_groups: int = 8):
+        super().__init__()
+        _validate_positive_int("in_ch", in_ch)
+        _validate_positive_int("out_ch", out_ch)
+        g = _pick_gn_groups(out_ch, gn_max_groups)
+
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(g, out_ch),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            nn.GroupNorm(g, out_ch),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class Downsample(nn.Module):
+    """Downsample by 2 via stride-2 conv (kernel=4,stride=2,pad=1)."""
+    def __init__(self, in_ch: int, out_ch: int, *, gn_max_groups: int = 8):
+        super().__init__()
+        _validate_positive_int("in_ch", in_ch)
+        _validate_positive_int("out_ch", out_ch)
+        g = _pick_gn_groups(out_ch, gn_max_groups)
+
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.GroupNorm(g, out_ch),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class Upsample(nn.Module):
+    """Upsample by 2 via transposed conv (kernel=4,stride=2,pad=1)."""
+    def __init__(self, in_ch: int, out_ch: int, *, gn_max_groups: int = 8):
+        super().__init__()
+        _validate_positive_int("in_ch", in_ch)
+        _validate_positive_int("out_ch", out_ch)
+        g = _pick_gn_groups(out_ch, gn_max_groups)
+
+        self.net = nn.Sequential(
+            nn.ConvTranspose2d(in_ch, out_ch, kernel_size=4, stride=2, padding=1, bias=False),
+            nn.GroupNorm(g, out_ch),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 
 # ----------------------------
-# Shared core: encoder + decoder (no bottleneck choice here)
+# Convolutional body: encoder + decoder
 # ----------------------------
 
-class _EncoderDecoderCore(nn.Module):
+class _EncoderDecoderBody(nn.Module):
     """
-    Shared convolutional core.
+    Convolutional encoder/decoder body (no bottleneck logic).
 
-    Maps:
-      x -> h_bottom where h_bottom has shape (B, c_bottom, Hb, Wb)
-      h_bottom -> x_logits with shape (B, in_channels, H, W) (pre-output-activation)
+    Shapes:
+      x:        (B, in_channels, H, W)
+      h_bottom: (B, c_bottom, Hb, Wb)
+      x_logits: (B, in_channels, H, W)   (pre output activation)
     """
     def __init__(
         self,
+        *,
         in_channels: int,
         img_shape: Tuple[int, int],
         base_channels: int,
         num_levels: int,
-        gn_groups: int,
+        gn_max_groups: int,
     ):
         super().__init__()
         _validate_positive_int("in_channels", in_channels)
-        _validate_positive_int("gn_groups", gn_groups)
+        _validate_positive_int("gn_max_groups", gn_max_groups)
 
         spec = _validate_and_compute_shapes(img_shape, base_channels, num_levels)
 
@@ -222,35 +241,36 @@ class _EncoderDecoderCore(nn.Module):
         self.img_shape = (spec.H, spec.W)
         self.base_channels = base_channels
         self.num_levels = num_levels
-        self.gn_groups = gn_groups
+        self.gn_max_groups = gn_max_groups
 
         # Exposed helpers for debugging/analysis
         self.bottom_shape: Tuple[int, int, int] = (spec.c_bottom, spec.Hb, spec.Wb)
         self.flat_dim: int = spec.flat_dim
 
-        # Encoder: x -> h_bottom
+        # Encoder
         ch0 = base_channels
-        enc = [ConvBlock(in_channels, ch0, gn_preferred=gn_groups)]
+        enc = [ConvBlock(in_channels, ch0, gn_max_groups=gn_max_groups)]
         c_in = ch0
         for level in range(num_levels):
             c_out = base_channels * (2 ** (level + 1))
-            enc.append(Downsample(c_in, c_out, gn_preferred=gn_groups))
-            enc.append(ConvBlock(c_out, c_out, gn_preferred=gn_groups))
+            enc.append(Downsample(c_in, c_out, gn_max_groups=gn_max_groups))
+            enc.append(ConvBlock(c_out, c_out, gn_max_groups=gn_max_groups))
             c_in = c_out
         self.encoder = nn.Sequential(*enc)
 
-        # Decoder: h_bottom -> x_logits
-        dec = [ConvBlock(spec.c_bottom, spec.c_bottom, gn_preferred=gn_groups)]
+        # Decoder
+        dec = [ConvBlock(spec.c_bottom, spec.c_bottom, gn_max_groups=gn_max_groups)]
         c_in = spec.c_bottom
         for level in range(num_levels - 1, -1, -1):
             c_out = base_channels * (2 ** level)
-            dec.append(Upsample(c_in, c_out, gn_preferred=gn_groups))
-            dec.append(ConvBlock(c_out, c_out, gn_preferred=gn_groups))
+            dec.append(Upsample(c_in, c_out, gn_max_groups=gn_max_groups))
+            dec.append(ConvBlock(c_out, c_out, gn_max_groups=gn_max_groups))
             c_in = c_out
         self.decoder = nn.Sequential(*dec)
+
         self.out_conv = nn.Conv2d(ch0, in_channels, kernel_size=1, bias=True)
 
-    # ---- validation helpers ----
+    # ---- checks ----
     def check_input(self, x: torch.Tensor) -> None:
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"Expected x to be a torch.Tensor, got {type(x)}")
@@ -272,7 +292,7 @@ class _EncoderDecoderCore(nn.Module):
         if (h.shape[2], h.shape[3]) != (hb, wb):
             raise ValueError(f"Expected h spatial {(hb, wb)}, got {(h.shape[2], h.shape[3])}")
 
-    # ---- core transforms ----
+    # ---- transforms ----
     def encode_to_bottom(self, x: torch.Tensor) -> torch.Tensor:
         self.check_input(x)
         return self.encoder(x)
@@ -280,44 +300,106 @@ class _EncoderDecoderCore(nn.Module):
     def decode_from_bottom(self, h: torch.Tensor) -> torch.Tensor:
         self.check_bottom(h)
         x = self.decoder(h)
-        x = self.out_conv(x)
-        return x  # logits / pre-activation
+        return self.out_conv(x)  # logits
 
 
 # ----------------------------
-# Base wrapper with shared forward + activation + get_latent_vector
+# Model: VectorLatentAE
 # ----------------------------
 
-class _BaseLatentAE(nn.Module):
+class VectorLatentAE(nn.Module):
     """
-    Base AE wrapper.
+    Vector bottleneck AE with flatten reduction.
 
-    Subclasses must implement:
-      - encode(x) -> z  (B, z_dim)
-      - decode(z) -> x_recon (B, C, H, W)
-
-    This base provides:
-      - forward(x, return_latent)
-      - output activation handling
-      - get_latent_vector() convenience for analysis
+    Parameters
+    ----------
+    in_channels:
+      Input channels (e.g., 3 for RGB).
+    img_shape:
+      Input spatial size (H, W). Must satisfy divisibility by 2**num_levels.
+    z_dim:
+      Latent vector dimension.
+    base_channels:
+      Channels after the first conv block. Doubles each downsample level.
+    num_levels:
+      Number of stride-2 downsamples (and symmetric upsamples).
+    out_activation:
+      "tanh" | "sigmoid" | "none"
+    gn_max_groups:
+      Maximum/preferred GN group count. Actual groups per layer are chosen as the
+      largest divisor of out_ch <= gn_max_groups.
     """
-    def __init__(self, *, out_activation: OutAct):
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        in_channels: int,
+        img_shape: Tuple[int, int],
+        z_dim: int,
+        base_channels: int = 32,
+        num_levels: int = 4,
+        out_activation: OutAct = "tanh",
+        gn_max_groups: int = 8,
+    ):
+        _validate_positive_int("in_channels", in_channels)
+        _validate_img_shape(img_shape)
+        _validate_positive_int("z_dim", z_dim)
+        _validate_positive_int("base_channels", base_channels)
+        _validate_nonneg_int("num_levels", num_levels)
         _validate_out_activation(out_activation)
+        _validate_positive_int("gn_max_groups", gn_max_groups)
+
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.img_shape = img_shape
+        self.z_dim = z_dim
         self.out_activation: OutAct = out_activation
+
+        self.body = _EncoderDecoderBody(
+            in_channels=in_channels,
+            img_shape=img_shape,
+            base_channels=base_channels,
+            num_levels=num_levels,
+            gn_max_groups=gn_max_groups,
+        )
+
+        # Useful for debugging/analysis
+        self.bottom_shape = self.body.bottom_shape
+        self.flat_dim = self.body.flat_dim
+
+        # Bottleneck heads
+        self.to_z = nn.Linear(self.flat_dim, z_dim)
+        self.from_z = nn.Linear(z_dim, self.flat_dim)
 
     def _apply_out_activation(self, x: torch.Tensor) -> torch.Tensor:
         if self.out_activation == "tanh":
             return torch.tanh(x)
         if self.out_activation == "sigmoid":
             return torch.sigmoid(x)
-        return x  # "none"
+        return x
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("Subclasses must implement encode(x) -> z")
+        h = self.body.encode_to_bottom(x)
+        return self.to_z(h.flatten(1))
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("Subclasses must implement decode(z) -> recon")
+        if not isinstance(z, torch.Tensor):
+            raise TypeError(f"decode expects z as torch.Tensor, got {type(z)}")
+        if z.ndim != 2:
+            raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
+        if z.shape[1] != self.z_dim:
+            raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
+
+        # Fail loudly: do not silently move tensors across devices.
+        param_device = next(self.parameters()).device
+        if z.device != param_device:
+            raise RuntimeError(f"z is on {z.device}, but model parameters are on {param_device}. Move z explicitly.")
+
+        B = z.shape[0]
+        c_bottom, Hb, Wb = self.bottom_shape
+        h = self.from_z(z).reshape(B, c_bottom, Hb, Wb)
+        x_logits = self.body.decode_from_bottom(h)
+        return self._apply_out_activation(x_logits)
 
     def forward(self, x: torch.Tensor, return_latent: bool = False):
         z = self.encode(x)
@@ -328,7 +410,7 @@ class _BaseLatentAE(nn.Module):
     def get_latent_vector(self, x: torch.Tensor) -> torch.Tensor:
         """
         Convenience for analysis: returns detached z (B, z_dim).
-        Preserves the module's training/eval mode.
+        Preserves module's training/eval mode.
         """
         was_training = self.training
         try:
@@ -339,155 +421,7 @@ class _BaseLatentAE(nn.Module):
 
 
 # ----------------------------
-# Variant 1: FLATTEN bottleneck (baseline)
-# ----------------------------
-
-class VectorLatentAE(_BaseLatentAE):
-    """
-    Baseline model.
-
-    Encoder reduction:
-      h_bottom (B, Cb, Hb, Wb) -> flatten -> (B, Cb*Hb*Wb) -> Linear -> z (B, z_dim)
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        img_shape: Tuple[int, int],
-        z_dim: int,
-        base_channels: int = 32,
-        num_levels: int = 4,
-        out_activation: OutAct = "tanh",
-        gn_groups: int = 8,
-    ):
-        # Public validation (fail early with clear errors)
-        _validate_positive_int("in_channels", in_channels)
-        _validate_img_shape(img_shape)
-        _validate_positive_int("z_dim", z_dim)
-        _validate_positive_int("base_channels", base_channels)
-        _validate_nonneg_int("num_levels", num_levels)
-        _validate_positive_int("gn_groups", gn_groups)
-        _validate_out_activation(out_activation)
-
-        super().__init__(out_activation=out_activation)
-
-        self.z_dim = z_dim
-        self.core = _EncoderDecoderCore(
-            in_channels=in_channels,
-            img_shape=img_shape,
-            base_channels=base_channels,
-            num_levels=num_levels,
-            gn_groups=gn_groups,
-        )
-
-        # Expose debug helpers
-        self.bottom_shape = self.core.bottom_shape
-        self.flat_dim = self.core.flat_dim
-
-        # Heads
-        self.to_z = nn.Linear(self.core.flat_dim, z_dim)
-        self.from_z = nn.Linear(z_dim, self.core.flat_dim)
-
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.core.encode_to_bottom(x)
-        z = self.to_z(h.flatten(1))
-        return z
-
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        if not torch.is_tensor(z):
-            raise TypeError(f"decode expects z as torch.Tensor, got {type(z)}")
-        if z.ndim != 2:
-            raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
-        if z.shape[1] != self.z_dim:
-            raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
-
-        z = z.to(next(self.parameters()).device)
-
-        B = z.shape[0]
-        c_bottom, Hb, Wb = self.core.bottom_shape
-        h = self.from_z(z).reshape(B, c_bottom, Hb, Wb)
-        x_logits = self.core.decode_from_bottom(h)
-        return self._apply_out_activation(x_logits)
-
-# ----------------------------
-# Variant 2: GAP bottleneck (ablation)
-# ----------------------------
-
-class GlobalAvgPoolLatentAE(_BaseLatentAE):
-    """
-    Ablation model.
-
-    Encoder reduction:
-      h_bottom (B, Cb, Hb, Wb) -> GAP -> (B, Cb) -> Linear -> z (B, z_dim)
-
-    Note:
-      Decoder remains identical to the baseline. The model still decodes from a
-      learned dense spatial tensor produced by from_z: z -> flat_dim.
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        img_shape: Tuple[int, int],
-        z_dim: int,
-        base_channels: int = 32,
-        num_levels: int = 4,
-        out_activation: OutAct = "tanh",
-        gn_groups: int = 8,
-    ):
-        # Public validation (fail early with clear errors)
-        _validate_positive_int("in_channels", in_channels)
-        _validate_img_shape(img_shape)
-        _validate_positive_int("z_dim", z_dim)
-        _validate_positive_int("base_channels", base_channels)
-        _validate_nonneg_int("num_levels", num_levels)
-        _validate_positive_int("gn_groups", gn_groups)
-        _validate_out_activation(out_activation)
-
-        super().__init__(out_activation=out_activation)
-
-        self.z_dim = z_dim
-        self.core = _EncoderDecoderCore(
-            in_channels=in_channels,
-            img_shape=img_shape,
-            base_channels=base_channels,
-            num_levels=num_levels,
-            gn_groups=gn_groups,
-        )
-
-        # Expose debug helpers
-        self.bottom_shape = self.core.bottom_shape
-        self.flat_dim = self.core.flat_dim
-
-        # Pool + heads
-        self._pool = nn.AdaptiveAvgPool2d((1, 1))
-        c_bottom, _, _ = self.core.bottom_shape
-        self.to_z = nn.Linear(c_bottom, z_dim)
-        self.from_z = nn.Linear(z_dim, self.core.flat_dim)
-
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.core.encode_to_bottom(x)
-        h_vec = self._pool(h).flatten(1)  # (B, c_bottom)
-        z = self.to_z(h_vec)
-        return z
-
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        if not isinstance(z, torch.Tensor):
-            raise TypeError(f"decode expects z as torch.Tensor, got {type(z)}")
-        if z.ndim != 2:
-            raise ValueError(f"decode expects z shape (B, z_dim), got {tuple(z.shape)}")
-        if z.shape[1] != self.z_dim:
-            raise ValueError(f"decode expects z_dim={self.z_dim}, got {z.shape[1]}")
-
-        z = z.to(next(self.parameters()).device)
-
-        B = z.shape[0]
-        c_bottom, Hb, Wb = self.core.bottom_shape
-        h = self.from_z(z).view(B, c_bottom, Hb, Wb)
-        x_logits = self.core.decode_from_bottom(h)
-        return self._apply_out_activation(x_logits)
-
-
-# ----------------------------
-# Utilities
+# Utils
 # ----------------------------
 
 def count_parameters(model: nn.Module) -> int:
