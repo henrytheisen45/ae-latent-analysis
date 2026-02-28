@@ -1,56 +1,64 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Callable, Any, Sequence, Literal
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple
 
+import json
 import random
+
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset, random_split
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
 SplitName = Literal["train", "val", "test"]
 
 
 # ----------------------------
-# Index / determinism helpers
+# Determinism helpers
 # ----------------------------
 
-def _seed_worker(worker_id: int) -> None:
+def seed_worker(worker_id: int) -> None:
     """
-    Ensure each dataloader worker has a deterministic RNG state.
-    PyTorch sets a base seed per worker; we derive numpy/random from it.
+    Seed numpy/random deterministically inside each DataLoader worker.
+
+    PyTorch assigns each worker a unique base seed; we derive numpy/random from it.
     """
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
 
-def _base_index(ds: Dataset, idx: int) -> int:
+def root_index(ds: Dataset, idx: int) -> int:
     """
-    Map an index into an arbitrarily nested Dataset/Subset/random_split view
-    back to the basew dataset index (torchvision dataset index).
+    Map an index in an arbitrarily nested Subset(...) view back to the root dataset index.
 
-    Works for chains like:
-      Subset(Subset(CIFAR10, ...), ...) and random_split(...) outputs.
+    If ds is not a Subset, this returns idx (the index into that dataset object).
     """
-    while isinstance(ds, Subset):
-        idx = int(ds.indices[idx])
-        ds = ds.dataset
-    return int(idx)
+    cur = ds
+    i = int(idx)
+    while isinstance(cur, Subset):
+        i = int(cur.indices[i])
+        cur = cur.dataset
+    return int(i)
 
 
-class IndexedDataset(Dataset):
+# ----------------------------
+# Dataset wrapper that returns IDs
+# ----------------------------
+
+class WithSampleID(Dataset):
     """
-    Wrap a dataset so __getitem__ returns (x, y, sid) where sid is a globally
-    unique identifier for the sample across dataset + split.
+    Wrap a dataset view so __getitem__ returns (x, y, sid),
+    where sid = (dataset_name, split_name, root_idx).
 
-    sid format: (dataset_name, split_name, base_idx)
-
-    Notes:
-    - For datasets where train/test are distinct underlying objects (e.g. CelebA),
-      base_idx is only meaningful within the split, hence the split_name namespace.
-    - This makes sid collision-proof when you later merge/compare embeddings across splits.
+    IMPORTANT meaning of root_idx:
+    - root_idx is the index in the underlying *root dataset object for that split*.
+      * For train/val, root_idx refers to indices in the "train_full" pool dataset.
+      * For test, root_idx refers to indices in the test dataset object.
+    - This is stable under Subset nesting, and collision-proof across splits because
+      split_name is included in sid.
     """
     def __init__(self, view: Dataset, *, dataset_name: str, split_name: SplitName):
         self.view = view
@@ -61,236 +69,295 @@ class IndexedDataset(Dataset):
         return len(self.view)
 
     def __getitem__(self, idx: int):
-        x, y = self.view[idx]
-        base_idx = _base_index(self.view, idx)
-        sid = (self.dataset_name, self.split_name, base_idx)
+        item = self.view[idx]
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            raise ValueError("Dataset must return at least (x, y).")
+        x, y = item[0], item[1]
+
+        ridx = root_index(self.view, idx)
+        sid = (self.dataset_name, self.split_name, ridx)
         return x, y, sid
 
 
-def _make_collate_fn(*, return_ids: bool) -> Optional[Callable[[Sequence[Any]], Any]]:
-    """
-    Collate function that optionally drops the sid from (x, y, sid).
-
-    return_ids=False, batches become (X, Y).
-    return_ids=True, use default collation (X, Y, SID).
-    """
-    if return_ids:
-        return None  
-
-    def _collate_drop_ids(batch: Sequence[Any]):
-        # Batch elements are expected to be (x, y, sid)
-        xs, ys, _sids = zip(*batch)
-        X = torch.utils.data.default_collate(xs)
-        Y = torch.utils.data.default_collate(ys)
-        return X, Y
-
-    return _collate_drop_ids
-
-
 # ----------------------------
-# Dataset info + transforms
+# DatasetInfo
 # ----------------------------
 
 @dataclass(frozen=True)
 class DatasetInfo:
     name: str
     channels: int
-    img_size: int
-    num_classes: Optional[int]
-    target_kind: str  # "class" | "attrs" | "none"
-    target_dim: Optional[int]
+    target_kind: Literal["class", "attrs"]
+    target_dim: Optional[int]  # None for class datasets
 
 
 def get_dataset_info(dataset_name: str) -> DatasetInfo:
     name = dataset_name.lower()
-    configs = {
-        "mnist":         dict(channels=1, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
-        "fashion_mnist": dict(channels=1, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
-        "cifar10":       dict(channels=3, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
-        "cifar100":      dict(channels=3, img_size=32, num_classes=100, target_kind="class", target_dim=None),
-        "svhn":          dict(channels=3, img_size=32, num_classes=10,  target_kind="class", target_dim=None),
-        "celeba":        dict(channels=3, img_size=64, num_classes=None, target_kind="attrs", target_dim=40),
-    }
-    if name not in configs:
-        raise ValueError(f"Unknown dataset: {dataset_name}. Available: {list(configs.keys())}")
-    c = configs[name]
-    return DatasetInfo(
-        name=name,
-        channels=c["channels"],
-        img_size=c["img_size"],
-        num_classes=c["num_classes"],
-        target_kind=c["target_kind"],
-        target_dim=c["target_dim"],
+    if name in {"cifar10", "cifar100", "svhn"}:
+        return DatasetInfo(name=name, channels=3, target_kind="class", target_dim=None)
+    if name == "celeba":
+        return DatasetInfo(name=name, channels=3, target_kind="attrs", target_dim=40)
+    raise ValueError(
+        f"Unknown dataset: {dataset_name}. Expected one of: cifar10, cifar100, svhn, celeba"
     )
 
 
-def _make_transform(info: DatasetInfo) -> transforms.Compose:
-    if info.channels == 1:
-        return transforms.Compose([
-            transforms.Resize(info.img_size),
-            transforms.CenterCrop(info.img_size),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5,), (0.5,)),
-        ])
+# ----------------------------
+# Transforms + dataset loading
+# ----------------------------
 
-    return transforms.Compose([
-        transforms.Resize(info.img_size),
-        transforms.CenterCrop(info.img_size),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    ])
+def make_transform(*, img_shape: Tuple[int, int], channels: int) -> transforms.Compose:
+    """
+    Deterministic preprocessing:
+      - Resize to model img_shape
+      - ToTensor
+      - Normalize to [-1, 1] (matches out_activation='tanh')
+    """
+    h, w = int(img_shape[0]), int(img_shape[1])
+    if h <= 0 or w <= 0:
+        raise ValueError(f"Invalid img_shape: {img_shape}")
 
-
-def _load_base_datasets(
-    dataset_name: str,
-    data_root: str,
-    download: bool = True,
-) -> Tuple[Dataset, Dataset, DatasetInfo]:
-    info = get_dataset_info(dataset_name)
-    tfm = _make_transform(info)
-
-    name = info.name
-    if name == "mnist":
-        train = datasets.MNIST(root=data_root, train=True, transform=tfm, download=download)
-        test  = datasets.MNIST(root=data_root, train=False, transform=tfm, download=download)
-
-    elif name == "fashion_mnist":
-        train = datasets.FashionMNIST(root=data_root, train=True, transform=tfm, download=download)
-        test  = datasets.FashionMNIST(root=data_root, train=False, transform=tfm, download=download)
-
-    elif name == "cifar10":
-        train = datasets.CIFAR10(root=data_root, train=True, transform=tfm, download=download)
-        test  = datasets.CIFAR10(root=data_root, train=False, transform=tfm, download=download)
-
-    elif name == "cifar100":
-        train = datasets.CIFAR100(root=data_root, train=True, transform=tfm, download=download)
-        test  = datasets.CIFAR100(root=data_root, train=False, transform=tfm, download=download)
-
-    elif name == "svhn":
-        train = datasets.SVHN(root=data_root, split="train", transform=tfm, download=download)
-        test  = datasets.SVHN(root=data_root, split="test",  transform=tfm, download=download)
-
-    elif name == "celeba":
-        # Enforce attrs explicitly so DatasetInfo matches
-        train = datasets.CelebA(root=data_root, split="train", transform=tfm, target_type="attr", download=download)
-        test  = datasets.CelebA(root=data_root, split="test",  transform=tfm, target_type="attr", download=download)
-
+    if channels == 1:
+        norm = transforms.Normalize((0.5,), (0.5,))
     else:
-        raise ValueError(f"Dataset {dataset_name} not implemented")
+        norm = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
-    return train, test, info
-
-
-# ----------------------------
-# Main entrypoint
-# ----------------------------
-
-def get_dataloaders(
-    dataset_name: str,
-    *,
-    batch_size: int = 128,
-    num_workers: int = 2,
-    data_root: str = "./data",
-    val_split: float = 0.1,
-    seed: int = 42,
-    subset_size: Optional[int] = None,
-    subset_seed: Optional[int] = None,
-    return_ids: bool = False,
-    shuffle_train: bool = True,
-    shuffle_val: bool = False,
-    shuffle_test: bool = False,
-    pin_memory: bool = True,
-    persistent_workers: bool = True,
-    drop_last: bool = False,
-    download: bool = True,
-) -> Tuple[DataLoader, DataLoader, DataLoader, DatasetInfo]:
-    """
-    Returns train_loader, val_loader, test_loader, dataset_info
-
-    Guarantees:
-    - Deterministic subset selection (optional) using subset_seed (defaults to seed)
-    - Deterministic train/val split using seed
-    - Deterministic worker seeding (numpy/random)
-    - Optional stable, collision-proof sample IDs via return_ids
-
-    Batch format:
-    - return_ids=False (default): (x, y)
-    - return_ids=True:            (x, y, sid)
-      where sid = (dataset_name, split_name, root_idx)
-    """
-    base_train, base_test, info = _load_base_datasets(dataset_name, data_root, download=download)
-
-    # Optional subset on the *train* pool (before train/val split)
-    if subset_size is not None and subset_size < len(base_train):
-        ss = seed if subset_seed is None else subset_seed
-        rng = np.random.default_rng(ss)
-        indices = rng.choice(len(base_train), size=subset_size, replace=False).tolist()
-        base_train = Subset(base_train, indices)
-
-    # Validate split
-    if not (0.0 < val_split < 1.0):
-        raise ValueError(f"val_split must be in (0,1). Got {val_split}")
-
-    n_total = len(base_train)
-    n_val = int((val_split * n_total))
-    n_val = max(1, min(n_val, n_total - 1))
-    n_train = n_total - n_val
-
-    train_view, val_view = random_split(
-        base_train,
-        lengths=[n_train, n_val],
-        generator=torch.Generator().manual_seed(seed),
+    return transforms.Compose(
+        [
+            transforms.Resize((h, w)),
+            transforms.ToTensor(),
+            norm,
+        ]
     )
 
-    # Wrap for subject IDS
-    train_ds = IndexedDataset(train_view, dataset_name=info.name, split_name="train")
-    val_ds   = IndexedDataset(val_view,   dataset_name=info.name, split_name="val")
-    test_ds  = IndexedDataset(base_test,  dataset_name=info.name, split_name="test")
 
-    # DataLoader generators
+def load_datasets(
+    *,
+    dataset_name: str,
+    root: str,
+    download: bool,
+    transform: transforms.Compose,
+) -> Tuple[Dataset, Dataset]:
+    """
+    Returns (train_full, test).
+
+    train_full is the pool we split into train/val deterministically.
+    test is the test split dataset object (separate from train_full for these torchvision datasets).
+    """
+    name = dataset_name.lower()
+
+    if name == "cifar10":
+        train_full = datasets.CIFAR10(root=root, train=True, download=download, transform=transform)
+        test = datasets.CIFAR10(root=root, train=False, download=download, transform=transform)
+        return train_full, test
+
+    if name == "cifar100":
+        train_full = datasets.CIFAR100(root=root, train=True, download=download, transform=transform)
+        test = datasets.CIFAR100(root=root, train=False, download=download, transform=transform)
+        return train_full, test
+
+    if name == "svhn":
+        train_full = datasets.SVHN(root=root, split="train", download=download, transform=transform)
+        test = datasets.SVHN(root=root, split="test", download=download, transform=transform)
+        return train_full, test
+
+    if name == "celeba":
+        # Explicitly enforce attributes as targets.
+        train_full = datasets.CelebA(
+            root=root,
+            split="train",
+            download=download,
+            transform=transform,
+            target_type="attr",
+        )
+        test = datasets.CelebA(
+            root=root,
+            split="test",
+            download=download,
+            transform=transform,
+            target_type="attr",
+        )
+        return train_full, test
+
+    raise ValueError(f"Dataset not implemented: {dataset_name}")
+
+
+# ----------------------------
+# Split persistence
+# ----------------------------
+
+def _split_path(save_dir: str, dataset_name: str, val_split: float, seed: int) -> Path:
+    """
+    Store split indices under:
+      {save_dir}/splits/{dataset}_val{val_split}_seed{seed}.json
+
+    Including val_split + seed avoids collisions across experiments.
+    """
+    safe_vs = str(val_split).replace(".", "p")
+    return Path(save_dir) / "splits" / f"{dataset_name}_val{safe_vs}_seed{seed}.json"
+
+
+def load_or_create_split_indices(
+    *,
+    n: int,
+    dataset_name: str,
+    val_split: float,
+    seed: int,
+    save_dir: str,
+) -> Dict[str, Sequence[int]]:
+    """
+    Create or load deterministic train/val indices for the train_full pool dataset.
+    """
+    if not (0.0 <= val_split < 1.0):
+        raise ValueError(f"val_split must be in [0,1). Got {val_split}")
+    if n <= 1:
+        raise ValueError(f"Dataset too small to split: n={n}")
+
+    path = _split_path(save_dir, dataset_name, val_split, seed)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or "train" not in data or "val" not in data:
+            raise ValueError(f"Malformed split file: {path}")
+        return data
+
+    g = torch.Generator().manual_seed(int(seed))
+    perm = torch.randperm(n, generator=g).tolist()
+
+    n_val = int(round(n * float(val_split)))
+    n_val = max(1, min(n_val, n - 1))
+
+    train_idx = perm[:-n_val]
+    val_idx = perm[-n_val:]
+
+    data = {"train": train_idx, "val": val_idx}
+    path.write_text(json.dumps(data, indent=2))
+    return data
+
+
+# ----------------------------
+# Public entrypoint: config-driven builder
+# ----------------------------
+
+def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build dataloaders from your YAML-parsed config dict.
+
+    Required:
+      cfg["run"]["seed"]
+      cfg["run"]["save_dir"]
+      cfg["model"]["img_shape"]  (used for transforms)
+      cfg["data"]["dataset"]
+      cfg["data"]["root"]
+      cfg["data"]["batch_size"]
+
+    Optional (with defaults):
+      cfg["data"]["download"]            default True
+      cfg["data"]["num_workers"]         default 0
+      cfg["data"]["pin_memory"]          default True
+      cfg["data"]["persistent_workers"]  default True
+      cfg["data"]["shuffle_train"]       default True
+      cfg["data"]["drop_last"]           default False
+      cfg["data"]["val_split"]           default 0.1
+
+    Returns:
+      {"train": DataLoader, "val": DataLoader, "test": DataLoader, "info": DatasetInfo}
+    """
+    if "run" not in cfg or not isinstance(cfg["run"], dict):
+        raise ValueError("cfg must contain dict key: run")
+    if "data" not in cfg or not isinstance(cfg["data"], dict):
+        raise ValueError("cfg must contain dict key: data")
+    if "model" not in cfg or not isinstance(cfg["model"], dict):
+        raise ValueError("cfg must contain dict key: model")
+
+    run = cfg["run"]
+    data = cfg["data"]
+    model = cfg["model"]
+
+    seed = int(run["seed"])
+    save_dir = str(run["save_dir"])
+
+    dataset_name = str(data["dataset"]).lower()
+    root = str(data["root"])
+    download = bool(data.get("download", True))
+
+    batch_size = int(data["batch_size"])
+    num_workers = int(data.get("num_workers", 0))
+    pin_memory = bool(data.get("pin_memory", True))
+    persistent_workers = bool(data.get("persistent_workers", True))
+    shuffle_train = bool(data.get("shuffle_train", True))
+    drop_last = bool(data.get("drop_last", False))
+    val_split = float(data.get("val_split", 0.1))
+
+    img_shape_raw = model.get("img_shape", None)
+    if not isinstance(img_shape_raw, (list, tuple)) or len(img_shape_raw) != 2:
+        raise ValueError("cfg['model']['img_shape'] must be a list/tuple of length 2, e.g. [64, 64]")
+    img_shape = (int(img_shape_raw[0]), int(img_shape_raw[1]))
+
+    info = get_dataset_info(dataset_name)
+    tfm = make_transform(img_shape=img_shape, channels=info.channels)
+
+    train_full, test_base = load_datasets(
+        dataset_name=dataset_name,
+        root=root,
+        download=download,
+        transform=tfm,
+    )
+
+    splits = load_or_create_split_indices(
+        n=len(train_full),
+        dataset_name=dataset_name,
+        val_split=val_split,
+        seed=seed,
+        save_dir=save_dir,
+    )
+
+    train_view = Subset(train_full, splits["train"])
+    val_view = Subset(train_full, splits["val"])
+
+    # Always return IDs (x, y, sid)
+    train_ds = WithSampleID(train_view, dataset_name=dataset_name, split_name="train")
+    val_ds = WithSampleID(val_view, dataset_name=dataset_name, split_name="val")
+    test_ds = WithSampleID(test_base, dataset_name=dataset_name, split_name="test")
+
+    # Deterministic shuffling for train
     g_train = torch.Generator().manual_seed(seed)
-    g_eval  = torch.Generator().manual_seed(seed + 1)
 
+    worker_init = seed_worker if num_workers > 0 else None
     use_persistent = bool(persistent_workers and num_workers > 0)
-    collate_fn = _make_collate_fn(return_ids=return_ids)
+
+    # IMPORTANT: don't pass prefetch_factor=None
+    common_kwargs: Dict[str, Any] = dict(
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        worker_init_fn=worker_init,
+        persistent_workers=use_persistent,
+    )
+    if num_workers > 0:
+        common_kwargs["prefetch_factor"] = 2
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=batch_size,
         shuffle=shuffle_train,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
+        generator=g_train if shuffle_train else None,
         drop_last=drop_last,
-        worker_init_fn=_seed_worker if num_workers > 0 else None,
-        generator=g_train,
-        persistent_workers=use_persistent,
-        collate_fn=collate_fn,
+        **common_kwargs,
     )
 
     val_loader = DataLoader(
         val_ds,
-        batch_size=batch_size,
-        shuffle=shuffle_val,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
+        shuffle=False,
         drop_last=False,
-        worker_init_fn=_seed_worker if num_workers > 0 else None,
-        generator=g_eval if shuffle_val else None,
-        persistent_workers=use_persistent,
-        collate_fn=collate_fn,
+        **common_kwargs,
     )
 
     test_loader = DataLoader(
         test_ds,
-        batch_size=batch_size,
-        shuffle=shuffle_test,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
+        shuffle=False,
         drop_last=False,
-        worker_init_fn=_seed_worker if num_workers > 0 else None,
-        generator=g_eval if shuffle_test else None,
-        persistent_workers=use_persistent,
-        collate_fn=collate_fn,
+        **common_kwargs,
     )
 
-    return train_loader, val_loader, test_loader, info
+    return {"train": train_loader, "val": val_loader, "test": test_loader, "info": info}
