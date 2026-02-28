@@ -1,6 +1,7 @@
 run:
   seed: 42
   save_dir: "runs"
+  run_name_base: "example"
 
 model:
   name: "VectorLatentAE"
@@ -10,10 +11,10 @@ model:
   base_channels: 32
   num_levels: 4
   gn_max_groups: 8
-  out_activation: "tanh"
 
 data:
   dataset: "celeba"
+  normalize: "-1_1"   # "-1_1" or "0_1"
   root: "PATH/TO/DATA"
   download: true
   batch_size: 128
@@ -23,6 +24,7 @@ data:
   shuffle_train: true
   drop_last: false
   val_split: 0.1
+  val_split_seed: 42
 
 train:
   epochs: 100
@@ -33,6 +35,11 @@ train:
   early_stop_patience: 10
   early_stop_min_delta: 0.0
   log_every: 50
+  latent_reg:
+    kind: "none"
+    strength: 0.0
+    params: {}
+
 
 loss:
-  name: "l1"
+  name: "mse"   # "mse" or "l1"
