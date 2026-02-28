@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
 SplitName = Literal["train", "val", "test"]
+NormalizeMode = Literal["-1_1", "0_1"]
 
 
 # ----------------------------
@@ -28,6 +29,7 @@ def seed_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+    torch.manual_seed(worker_seed) 
 
 
 def root_index(ds: Dataset, idx: int) -> int:
@@ -106,29 +108,52 @@ def get_dataset_info(dataset_name: str) -> DatasetInfo:
 # Transforms + dataset loading
 # ----------------------------
 
-def make_transform(*, img_shape: Tuple[int, int], channels: int) -> transforms.Compose:
+def _parse_normalize_mode(v: Any) -> NormalizeMode:
+    if v is None:
+        return "-1_1"
+    if not isinstance(v, str):
+        raise ValueError(f"cfg['data']['normalize'] must be a string, got {type(v)}")
+    s = v.strip()
+    if s not in ("-1_1", "0_1"):
+        raise ValueError(f"cfg['data']['normalize'] must be '-1_1' or '0_1', got {v!r}")
+    return s  # type: ignore[return-value]
+
+
+def make_transform(
+    *,
+    img_shape: Tuple[int, int],
+    channels: int,
+    normalize: NormalizeMode = "-1_1",
+) -> transforms.Compose:
     """
     Deterministic preprocessing:
       - Resize to model img_shape
       - ToTensor
-      - Normalize to [-1, 1] (matches out_activation='tanh')
+      - Normalize:
+          "-1_1": map [0,1] -> [-1,1] (matches out_activation='tanh')
+          "0_1":  keep [0,1] as-is
     """
     h, w = int(img_shape[0]), int(img_shape[1])
     if h <= 0 or w <= 0:
         raise ValueError(f"Invalid img_shape: {img_shape}")
 
-    if channels == 1:
-        norm = transforms.Normalize((0.5,), (0.5,))
-    else:
-        norm = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ops = [
+        transforms.Resize((h, w)),
+        transforms.ToTensor(),
+    ]
 
-    return transforms.Compose(
-        [
-            transforms.Resize((h, w)),
-            transforms.ToTensor(),
-            norm,
-        ]
-    )
+    if normalize == "-1_1":
+        if channels == 1:
+            ops.append(transforms.Normalize((0.5,), (0.5,)))
+        else:
+            ops.append(transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)))
+    elif normalize == "0_1":
+        # Leave as [0,1]
+        pass
+    else:
+        raise ValueError(f"Unknown normalize mode: {normalize}")
+
+    return transforms.Compose(ops)
 
 
 def load_datasets(
@@ -254,12 +279,14 @@ def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
     Optional (with defaults):
       cfg["data"]["download"]            default True
+      cfg["data"]["normalize"]           default "-1_1"
       cfg["data"]["num_workers"]         default 0
       cfg["data"]["pin_memory"]          default True
       cfg["data"]["persistent_workers"]  default True
       cfg["data"]["shuffle_train"]       default True
       cfg["data"]["drop_last"]           default False
       cfg["data"]["val_split"]           default 0.1
+      cfg["data"]["val_split_seed"]      default cfg["run"]["seed"]
 
     Returns:
       {"train": DataLoader, "val": DataLoader, "test": DataLoader, "info": DatasetInfo}
@@ -282,6 +309,8 @@ def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
     root = str(data["root"])
     download = bool(data.get("download", True))
 
+    normalize_mode = _parse_normalize_mode(data.get("normalize", "-1_1"))
+
     batch_size = int(data["batch_size"])
     num_workers = int(data.get("num_workers", 0))
     pin_memory = bool(data.get("pin_memory", True))
@@ -290,13 +319,16 @@ def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
     drop_last = bool(data.get("drop_last", False))
     val_split = float(data.get("val_split", 0.1))
 
+    # NEW: split seed is separate from run.seed (defaults to run.seed)
+    val_split_seed = int(data.get("val_split_seed", seed))
+
     img_shape_raw = model.get("img_shape", None)
     if not isinstance(img_shape_raw, (list, tuple)) or len(img_shape_raw) != 2:
         raise ValueError("cfg['model']['img_shape'] must be a list/tuple of length 2, e.g. [64, 64]")
     img_shape = (int(img_shape_raw[0]), int(img_shape_raw[1]))
 
     info = get_dataset_info(dataset_name)
-    tfm = make_transform(img_shape=img_shape, channels=info.channels)
+    tfm = make_transform(img_shape=img_shape, channels=info.channels, normalize=normalize_mode)
 
     train_full, test_base = load_datasets(
         dataset_name=dataset_name,
@@ -309,7 +341,7 @@ def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
         n=len(train_full),
         dataset_name=dataset_name,
         val_split=val_split,
-        seed=seed,
+        seed=val_split_seed,
         save_dir=save_dir,
     )
 
@@ -321,7 +353,7 @@ def build_dataloaders(cfg: Dict[str, Any]) -> Dict[str, Any]:
     val_ds = WithSampleID(val_view, dataset_name=dataset_name, split_name="val")
     test_ds = WithSampleID(test_base, dataset_name=dataset_name, split_name="test")
 
-    # Deterministic shuffling for train
+    # Deterministic shuffling for train (still uses run.seed)
     g_train = torch.Generator().manual_seed(seed)
 
     worker_init = seed_worker if num_workers > 0 else None
